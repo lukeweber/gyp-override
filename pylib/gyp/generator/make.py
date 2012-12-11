@@ -62,6 +62,7 @@ generator_extra_sources_for_rules = []
 def CalculateVariables(default_variables, params):
   """Calculate additional variables for use in the build (called by gyp)."""
   flavor = gyp.common.GetFlavor(params)
+  default_variables.setdefault('HOST_OS', gyp.common.GetHostOS())
   if flavor == 'mac':
     default_variables.setdefault('OS', 'mac')
     default_variables.setdefault('SHARED_LIB_SUFFIX', '.dylib')
@@ -161,7 +162,11 @@ cmd_solink_module = $(LINK.$(TOOLSET)) -shared $(GYP_LDFLAGS) $(LDFLAGS.$(TOOLSE
 
 LINK_COMMANDS_MAC = """\
 quiet_cmd_alink = LIBTOOL-STATIC $@
-cmd_alink = rm -f $@ && ./gyp-mac-tool filter-libtool libtool $(GYP_LIBTOOLFLAGS) -static -o $@ $(filter %.o,$^)
+cmd_alink = rm -f $@ && ./gyp-mac-tool filter-libtool libtool $(GYP_LIBTOOLFLAGS) -v -static -o $@ $(filter %.o,$^)
+
+quiet_cmd_alink_thin = LIBTOOL-STATIC-THIN-FAKE $@
+cmd_alink_thin = rm -f $@ && ./gyp-mac-tool filter-libtool libtool $(GYP_LIBTOOLFLAGS) -v -static -o $@ $(filter %.o,$^)
+
 
 quiet_cmd_link = LINK($(TOOLSET)) $@
 cmd_link = $(LINK.$(TOOLSET)) $(GYP_LDFLAGS) $(LDFLAGS.$(TOOLSET)) -o "$@" $(LD_INPUTS) $(LIBS)
@@ -178,16 +183,16 @@ cmd_solink_module = $(LINK.$(TOOLSET)) -shared $(GYP_LDFLAGS) $(LDFLAGS.$(TOOLSE
 """
 
 LINK_COMMANDS_ANDROID = """\
-quiet_cmd_alink = AR($(TOOLSET)) $@
-cmd_alink = rm -f $@ && $(AR.$(TOOLSET)) crs $@ $(filter %.o,$^)
+quiet_cmd_alink_target = AR($(TOOLSET)) $@
+cmd_alink_target = rm -f $@ && $(AR.$(TOOLSET)) crs $@ $(filter %.o,$^)
 
-quiet_cmd_alink_thin = AR($(TOOLSET)) $@
-cmd_alink_thin = rm -f $@ && $(AR.$(TOOLSET)) crsT $@ $(filter %.o,$^)
+quiet_cmd_alink_thin_target = AR($(TOOLSET)) $@
+cmd_alink_thin_target = rm -f $@ && $(AR.$(TOOLSET)) crsT $@ $(filter %.o,$^)
 
 # Due to circular dependencies between libraries :(, we wrap the
 # special "figure out circular dependencies" flags around the entire
 # input list during linking.
-quiet_cmd_link = LINK($(TOOLSET)) $@
+quiet_cmd_link_target = LINK($(TOOLSET)) $@
 quiet_cmd_link_host = LINK($(TOOLSET)) $@
 cmd_link = $(LINK.$(TOOLSET)) $(GYP_LDFLAGS) $(LDFLAGS.$(TOOLSET)) -o $@ -Wl,--start-group $(LD_INPUTS) -Wl,--end-group $(LIBS)
 cmd_link_host = $(LINK.$(TOOLSET)) $(GYP_LDFLAGS) $(LDFLAGS.$(TOOLSET)) -o $@ $(LD_INPUTS) $(LIBS)
@@ -195,11 +200,11 @@ cmd_link_host = $(LINK.$(TOOLSET)) $(GYP_LDFLAGS) $(LDFLAGS.$(TOOLSET)) -o $@ $(
 # Other shared-object link notes:
 # - Set SONAME to the library filename so our binaries don't reference
 # the local, absolute paths used on the link command-line.
-quiet_cmd_solink = SOLINK($(TOOLSET)) $@
-cmd_solink = $(LINK.$(TOOLSET)) -shared $(GYP_LDFLAGS) $(LDFLAGS.$(TOOLSET)) -Wl,-soname=$(@F) -o $@ -Wl,--whole-archive $(LD_INPUTS) -Wl,--no-whole-archive $(LIBS)
+quiet_cmd_solink_target = SOLINK($(TOOLSET)) $@
+cmd_solink_target = $(LINK.$(TOOLSET)) -shared $(GYP_LDFLAGS) $(LDFLAGS.$(TOOLSET)) -Wl,-soname=$(@F) -o $@ -Wl,--whole-archive $(LD_INPUTS) -Wl,--no-whole-archive $(LIBS)
 
-quiet_cmd_solink_module = SOLINK_MODULE($(TOOLSET)) $@
-cmd_solink_module = $(LINK.$(TOOLSET)) -shared $(GYP_LDFLAGS) $(LDFLAGS.$(TOOLSET)) -Wl,-soname=$(@F) -o $@ -Wl,--start-group $(filter-out FORCE_DO_CMD, $^) -Wl,--end-group $(LIBS)
+quiet_cmd_solink_module_target = SOLINK_MODULE($(TOOLSET)) $@
+cmd_solink_module_target = $(LINK.$(TOOLSET)) -shared $(GYP_LDFLAGS) $(LDFLAGS.$(TOOLSET)) -Wl,-soname=$(@F) -o $@ -Wl,--start-group $(filter-out FORCE_DO_CMD, $^) -Wl,--end-group $(LIBS)
 quiet_cmd_solink_module_host = SOLINK_MODULE($(TOOLSET)) $@
 cmd_solink_module_host = $(LINK.$(TOOLSET)) -shared $(GYP_LDFLAGS) $(LDFLAGS.$(TOOLSET)) -Wl,-soname=$(@F) -o $@ $(filter-out FORCE_DO_CMD, $^) $(LIBS)
 """
@@ -1530,8 +1535,8 @@ $(obj).$(TOOLSET)/$(TARGET)/%%.o: $(obj)/%%%s FORCE_DO_CMD
       self.WriteLn('%s: LD_INPUTS := %s' % (
           QuoteSpaces(self.output_binary),
           ' '.join(map(QuoteSpaces, link_deps))))
-      if self.toolset == 'host' and self.flavor == 'android':
-        self.WriteDoCmd([self.output_binary], link_deps, 'link_host',
+      if self.toolset == 'target' and self.flavor == 'android':
+        self.WriteDoCmd([self.output_binary], link_deps, 'link_target',
                         part_of_all, postbuilds=postbuilds)
       else:
         self.WriteDoCmd([self.output_binary], link_deps, 'link', part_of_all,
@@ -1543,24 +1548,36 @@ $(obj).$(TOOLSET)/$(TARGET)/%%.o: $(obj)/%%%s FORCE_DO_CMD
             "Spaces in alink input filenames not supported (%s)"  % link_dep)
       if (self.flavor not in ('mac', 'win') and not
           self.is_standalone_static_library):
-        self.WriteDoCmd([self.output_binary], link_deps, 'alink_thin',
-                        part_of_all, postbuilds=postbuilds)
+        if self.toolset == 'target' and self.flavor == 'android':
+          self.WriteDoCmd([self.output_binary], link_deps, 'alink_thin_target',
+                  part_of_all, postbuilds=postbuilds)
+        else:
+          self.WriteDoCmd([self.output_binary], link_deps, 'alink_thin',
+                  part_of_all, postbuilds=postbuilds)
       else:
-        self.WriteDoCmd([self.output_binary], link_deps, 'alink', part_of_all,
-                        postbuilds=postbuilds)
+        if self.toolset == 'target' and self.flavor == 'android':
+          self.WriteDoCmd([self.output_binary], link_deps, 'alink_target',
+                  part_of_all, postbuilds=postbuilds)
+        else:
+          self.WriteDoCmd([self.output_binary], link_deps, 'alink', part_of_all,
+                          postbuilds=postbuilds)
     elif self.type == 'shared_library':
       self.WriteLn('%s: LD_INPUTS := %s' % (
             QuoteSpaces(self.output_binary),
             ' '.join(map(QuoteSpaces, link_deps))))
-      self.WriteDoCmd([self.output_binary], link_deps, 'solink', part_of_all,
-                      postbuilds=postbuilds)
+      if self.toolset == 'target' and self.flavor == 'android':
+        self.WriteDoCmd([self.output_binary], link_deps, 'solink_target',
+                part_of_all, postbuilds=postbuilds)
+      else:
+        self.WriteDoCmd([self.output_binary], link_deps, 'solink', part_of_all,
+                        postbuilds=postbuilds)
     elif self.type == 'loadable_module':
       for link_dep in link_deps:
         assert ' ' not in link_dep, (
             "Spaces in module input filenames not supported (%s)"  % link_dep)
-      if self.toolset == 'host' and self.flavor == 'android':
-        self.WriteDoCmd([self.output_binary], link_deps, 'solink_module_host',
-                        part_of_all, postbuilds=postbuilds)
+      if self.toolset == 'target' and self.flavor == 'android':
+        self.WriteDoCmd([self.output_binary], link_deps, 'solink_module_target',
+            part_of_all, postbuilds=postbuilds)
       else:
         self.WriteDoCmd(
             [self.output_binary], link_deps, 'solink_module', part_of_all,
@@ -1928,6 +1945,7 @@ def PerformBuild(data, configurations, params):
 def GenerateOutput(target_list, target_dicts, data, params):
   options = params['options']
   flavor = gyp.common.GetFlavor(params)
+  host_os = gyp.common.GetHostOS()
   generator_flags = params.get('generator_flags', {})
   builddir_name = generator_flags.get('output_dir', 'out')
   android_ndk_version = generator_flags.get('android_ndk_version', None)
@@ -1982,27 +2000,36 @@ def GenerateOutput(target_list, target_dicts, data, params):
       'extra_commands': '',
       'srcdir': srcdir,
     }
-  if flavor == 'mac':
+  if host_os == 'mac':
     flock_command = './gyp-mac-tool flock'
     header_params.update({
         'flock': flock_command,
         'flock_index': 2,
         'link_commands': LINK_COMMANDS_MAC,
-        'extra_commands': SHARED_HEADER_MAC_COMMANDS,
     })
-  elif flavor == 'android':
+  elif host_os == 'solaris':
+    flock_command = './gyp-sun-tool flock',
     header_params.update({
-        'link_commands': LINK_COMMANDS_ANDROID,
+        'flock': flock_command,
+        'flock_index': 2,
+    })
+  elif host_os == 'freebsd':
+    flock_command = 'lockf',
+    header_params.update({
+        'flock': flock_command,
+    })
+
+  if flavor == 'mac':
+    header_params.update({
+        'extra_commands': SHARED_HEADER_MAC_COMMANDS,
     })
   elif flavor == 'solaris':
     header_params.update({
-        'flock': './gyp-sun-tool flock',
-        'flock_index': 2,
         'extra_commands': SHARED_HEADER_SUN_COMMANDS,
     })
-  elif flavor == 'freebsd':
+  elif flavor == 'android':
     header_params.update({
-        'flock': 'lockf',
+        'extra_commands': LINK_COMMANDS_ANDROID,
     })
 
   header_params.update({
@@ -2025,7 +2052,7 @@ def GenerateOutput(target_list, target_dicts, data, params):
     if key == 'LINK':
       make_global_settings += ('%s ?= %s $(builddir)/linker.lock %s\n' %
                                (key, flock_command, value))
-    elif key in ('CC', 'CC.host', 'CXX', 'CXX.host'):
+    elif key in ('CC', 'CC.host', 'CXX', 'CXX.host', 'AR', 'AR.host'):
       make_global_settings += (
           'ifneq (,$(filter $(origin %s), undefined default))\n' % key)
       # Let gyp-time envvars win over global settings.
@@ -2053,7 +2080,7 @@ def GenerateOutput(target_list, target_dicts, data, params):
 
   # Put build-time support tools next to the root Makefile.
   dest_path = os.path.dirname(makefile_path)
-  gyp.common.CopyTool(flavor, dest_path)
+  gyp.common.CopyTool(host_os, dest_path)
 
   # Find the list of targets that derive from the gyp file(s) being built.
   needed_targets = set()

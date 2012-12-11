@@ -378,8 +378,12 @@ def GetFlavor(params):
     return 'solaris'
   if sys.platform.startswith('freebsd'):
     return 'freebsd'
-
   return 'linux'
+
+
+def GetHostOS():
+  """Returns flavor with no parameter overrides."""
+  return GetFlavor({})
 
 
 def CopyTool(flavor, out_path):
